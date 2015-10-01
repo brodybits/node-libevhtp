@@ -50,12 +50,59 @@ struct StaticPathInfo {
   std::string content;
 };
 
+struct StaticCBPathInfo {
+  // XXX TODO: should store & use V8 isolate value:
+  StaticCBPathInfo(const char * path, int code, const char * content, v8::Local<v8::Function> & f) :
+    path(path), code(code), content(content), pf(f) {}
+
+  std::string path;
+  int code;
+  std::string content;
+  Nan::Persistent<v8::Function> pf;
+};
+
+class HTTPServerReq : public ObjectWrapTemplate<HTTPServerReq> {
+public:
+  static void Init(Nan::ADDON_REGISTER_FUNCTION_ARGS_TYPE ignored) {
+    function_template tpl =
+      NewConstructorFunctionTemplate("HTTPServerReq", 1);
+    SetPrototypeMethod(tpl, "tt", tt);
+    SetPrototypeMethod(tpl, "tres", tres);
+    SetConstructorFunctionTemplate(tpl);
+  }
+
+  HTTPServerReq(Nan::NAN_METHOD_ARGS_TYPE args_info) : info(nullptr), r(nullptr) {}
+
+  ~HTTPServerReq() {}
+
+  static v8::Local<v8::Value> NewInstance(int argc, v8::Local<v8::Value> argv[]) {
+    return NewInstanceMethod(argc, argv);
+  }
+
+  static void tt(Nan::NAN_METHOD_ARGS_TYPE args_info) {
+    HTTPServerReq * myself = ObjectFromMethodArgsInfo(args_info);
+    std::cout << "tt called" << std::endl;
+  }
+
+  static void tres(Nan::NAN_METHOD_ARGS_TYPE args_info) {
+    HTTPServerReq * myself = ObjectFromMethodArgsInfo(args_info);
+    std::cout << "tres called" << std::endl;
+    //evbuffer_add_reference(r->buffer_out, info->content.c_str(), info->content.size(), NULL, NULL);
+    evbuffer_add_reference(myself->r->buffer_out, "from tres", 10, NULL, NULL);
+    evhtp_send_reply(myself->r, myself->info->code);
+  }
+
+  StaticCBPathInfo * info;
+  evhtp_request_t * r;
+};
+
 class HTTPServer : public ObjectWrapTemplate<HTTPServer> {
 public:
   static void Init(Nan::ADDON_REGISTER_FUNCTION_ARGS_TYPE ignored) {
     function_template tpl =
       NewConstructorFunctionTemplate("HTTPServer", 1);
     SetPrototypeMethod(tpl, "staticPath", StaticPath);
+    SetPrototypeMethod(tpl, "staticCBPath", StaticCBPath);
     SetPrototypeMethod(tpl, "bindSocket", BindSocket);
     SetConstructorFunctionTemplate(tpl);
   }
@@ -103,11 +150,63 @@ public:
     evhtp_set_cb(myself->evh, mypath.c_str(), StaticCB, reinterpret_cast<void *>(info));
   }
 
+  static void StaticCBPath(Nan::NAN_METHOD_ARGS_TYPE args_info) {
+    HTTPServer * myself = ObjectFromMethodArgsInfo(args_info);
+
+    if (args_info.Length() < 4 ||
+        !args_info[0]->IsString() ||
+        !args_info[1]->IsInt32() ||
+        !args_info[2]->IsString() ||
+        !args_info[3]->IsFunction()) {
+      std::cerr << "Sorry incorrect arguments to staticPath" << std::endl;
+      return;
+    }
+
+    std::string mypath(*v8::String::Utf8Value(args_info[0]->ToString()));
+
+    // XXX TBD ???:
+    if (mypath[0] != '/') {
+      std::cerr << "Sorry invalid path" << std::endl;
+      return;
+    }
+
+    // XXX TODO:
+    // - Support true Buffer(s)
+    // - TBD ???: free the memory in case this static path is no longer relevant
+    // - TBD ???: get rid of extra std::string storage to make this more efficient
+    std::string mycontent(*v8::String::Utf8Value(args_info[2]->ToString()));
+    v8::Local<v8::Function> f = v8::Local<v8::Function>::Cast(args_info[3]);
+    StaticCBPathInfo * info =
+      new StaticCBPathInfo(mypath.c_str(), args_info[1]->Int32Value(), mycontent.c_str(), f);
+
+    evhtp_set_cb(myself->evh, mypath.c_str(), StaticCBPathCall, reinterpret_cast<void *>(info));
+  }
+
   static void StaticCB(evhtp_request_t * r, void * p) {
     StaticPathInfo * info = reinterpret_cast<StaticPathInfo *>(p);
 
     evbuffer_add_reference(r->buffer_out, info->content.c_str(), info->content.size(), NULL, NULL);
     evhtp_send_reply(r, info->code);
+  }
+
+  static void StaticCBPathCall(evhtp_request_t * r, void * p) {
+    StaticCBPathInfo * info = reinterpret_cast<StaticCBPathInfo *>(p);
+
+    //evbuffer_add_reference(r->buffer_out, info->content.c_str(), info->content.size(), NULL, NULL);
+    //evhtp_send_reply(r, info->code);
+
+    v8::Local<v8::Value> sr_argv[1] = {Nan::New(1)};
+    v8::Local<v8::Object> sr = HTTPServerReq::NewInstance(1, sr_argv)->ToObject();
+
+    HTTPServerReq * mysr = ObjectWrap::Unwrap<HTTPServerReq>(sr);
+    mysr->info = info;
+    mysr->r = r;
+
+    static int argc = 1;
+    v8::Local<v8::Value> argv[1] = {sr};
+
+    v8::Local<v8::Function> f = Nan::New(info->pf);
+    f->Call(Nan::Null(), argc, argv);
   }
 
   static void BindSocket(Nan::NAN_METHOD_ARGS_TYPE args_info) {
@@ -136,6 +235,7 @@ void MyEventServer::NewHTTPServer(Nan::NAN_METHOD_ARGS_TYPE args_info) {
 
 void init(Nan::ADDON_REGISTER_FUNCTION_ARGS_TYPE target) {
   MyEventServer::Init(target);
+  HTTPServerReq::Init(target);
   HTTPServer::Init(target);
   Nan::Set(target, Nan::New<v8::String>("newEventServer").ToLocalChecked(),
            Nan::New<v8::FunctionTemplate>(MyEventServer::NewInstance)->GetFunction());
