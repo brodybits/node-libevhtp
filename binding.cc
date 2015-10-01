@@ -71,7 +71,7 @@ public:
     SetConstructorFunctionTemplate(tpl);
   }
 
-  HTTPServerReq(Nan::NAN_METHOD_ARGS_TYPE args_info) : info(nullptr), r(nullptr) {}
+  HTTPServerReq(Nan::NAN_METHOD_ARGS_TYPE args_info) : info(NULL), r(NULL) {}
 
   ~HTTPServerReq() {}
 
